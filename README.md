@@ -1,3 +1,13 @@
+# FORK. FORK. FORK.
+
+This is a fork of the project with some additional patches applied:
+
+* [does not reflow markdown comments](https://github.com/google/google-java-format/pull/1231)
+
+It has different maven coordinates (`com.carrotsearch.googlejavaformat`).
+
+Most of the time, you'll be happier with the original version.
+
 # google-java-format
 
 `google-java-format` is a program that reformats Java source code to comply with
