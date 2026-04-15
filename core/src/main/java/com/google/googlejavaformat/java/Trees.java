@@ -14,12 +14,10 @@
 
 package com.google.googlejavaformat.java;
 
-import static com.google.googlejavaformat.java.Trees.getEndPosition;
-import static com.google.googlejavaformat.java.Trees.getStartPosition;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
@@ -41,6 +39,10 @@ import com.sun.tools.javac.util.Log;
 import com.sun.tools.javac.util.Options;
 import java.io.IOError;
 import java.io.IOException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.invoke.VarHandle;
 import java.net.URI;
 import java.util.List;
 import javax.lang.model.element.Name;
@@ -49,6 +51,7 @@ import javax.tools.DiagnosticListener;
 import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.StandardLocation;
+import org.jspecify.annotations.Nullable;
 
 /** Utilities for working with {@link Tree}s. */
 class Trees {
@@ -68,8 +71,13 @@ class Trees {
   }
 
   /** Returns the source end position of the node. */
-  public static int getEndPosition(Tree tree, CompilationUnitTree unit) {
-    return ((JCTree) tree).getEndPosition(((JCCompilationUnit) unit).endPositions);
+  static int getEndPosition(Tree tree, CompilationUnitTree unit) {
+    try {
+      return (int) GET_END_POS_HANDLE.invokeExact((JCTree) tree, (JCCompilationUnit) unit);
+    } catch (Throwable e) {
+      Throwables.throwIfUnchecked(e);
+      throw new AssertionError(e);
+    }
   }
 
   /** Returns the source text for the node. */
@@ -86,15 +94,19 @@ class Trees {
   /** Returns the simple name of a (possibly qualified) method invocation expression. */
   static Name getMethodName(MethodInvocationTree methodInvocation) {
     ExpressionTree select = methodInvocation.getMethodSelect();
-    return select instanceof MemberSelectTree
-        ? ((MemberSelectTree) select).getIdentifier()
-        : ((IdentifierTree) select).getName();
+    return switch (select) {
+      case MemberSelectTree memberSelect -> memberSelect.getIdentifier();
+      case IdentifierTree identifier -> identifier.getName();
+      default -> throw new AssertionError(select);
+    };
   }
 
   /** Returns the receiver of a qualified method invocation expression, or {@code null}. */
-  static ExpressionTree getMethodReceiver(MethodInvocationTree methodInvocation) {
+  static @Nullable ExpressionTree getMethodReceiver(MethodInvocationTree methodInvocation) {
     ExpressionTree select = methodInvocation.getMethodSelect();
-    return select instanceof MemberSelectTree ? ((MemberSelectTree) select).getExpression() : null;
+    return select instanceof MemberSelectTree memberSelectTree
+        ? memberSelectTree.getExpression()
+        : null;
   }
 
   /** Returns the string name of an operator, including assignment and compound assignment. */
@@ -114,22 +126,6 @@ class Trees {
   /** Returns the precedence of an expression's operator. */
   static int precedence(ExpressionTree expression) {
     return TreeInfo.opPrec(((JCTree) expression).getTag());
-  }
-
-  /**
-   * Returns the enclosing type declaration (class, enum, interface, or annotation) for the given
-   * path.
-   */
-  static ClassTree getEnclosingTypeDeclaration(TreePath path) {
-    for (; path != null; path = path.getParentPath()) {
-      switch (path.getLeaf().getKind()) {
-        case CLASS, ENUM, INTERFACE, ANNOTATED_TYPE -> {
-          return (ClassTree) path.getLeaf();
-        }
-        default -> {}
-      }
-    }
-    throw new AssertionError();
   }
 
   /** Skips a single parenthesized tree. */
@@ -167,15 +163,35 @@ class Trees {
         };
     Log.instance(context).useSource(source);
     ParserFactory parserFactory = ParserFactory.instance(context);
-    JavacParser parser =
-        parserFactory.newParser(
-            javaInput,
-            /* keepDocComments= */ true,
-            /* keepEndPos= */ true,
-            /* keepLineMap= */ true);
+    JavacParser parser;
+    try {
+      parser =
+          newParser(
+              parserFactory,
+              javaInput,
+              /* keepDocComments= */ true,
+              /* keepEndPos= */ true,
+              /* keepLineMap= */ true);
+    } catch (Throwable e) {
+      Throwables.throwIfUnchecked(e);
+      throw new AssertionError(e);
+    }
     JCCompilationUnit unit = parser.parseCompilationUnit();
     unit.sourcefile = source;
     return unit;
+  }
+
+  private static JavacParser newParser(
+      ParserFactory parserFactory,
+      CharSequence source,
+      boolean keepDocComments,
+      boolean keepEndPos,
+      boolean keepLineMap) {
+    if (END_POS_TABLE_CLASS != null) {
+      return parserFactory.newParser(source, keepDocComments, keepEndPos, keepLineMap);
+    }
+    return parserFactory.newParser(
+        source, keepDocComments, keepLineMap, /* parseModuleInfo */ false);
   }
 
   private static boolean errorDiagnostic(Diagnostic<?> input) {
@@ -185,5 +201,47 @@ class Trees {
     // accept constructor-like method declarations that don't match the name of their
     // enclosing class
     return !input.getCode().equals("compiler.err.invalid.meth.decl.ret.type.req");
+  }
+
+  private static final @Nullable Class<?> END_POS_TABLE_CLASS = getEndPosTableClass();
+
+  private static @Nullable Class<?> getEndPosTableClass() {
+    try {
+      return Class.forName("com.sun.tools.javac.tree.EndPosTable");
+    } catch (ClassNotFoundException e) {
+      // JDK versions after https://bugs.openjdk.org/browse/JDK-8372948
+      return null;
+    }
+  }
+
+  private static final MethodHandle GET_END_POS_HANDLE = getEndPosMethodHandle();
+
+  private static MethodHandle getEndPosMethodHandle() {
+    MethodHandles.Lookup lookup = MethodHandles.lookup();
+    if (END_POS_TABLE_CLASS == null) {
+      try {
+        // (tree, unit) -> tree.getEndPosition()
+        return MethodHandles.dropArguments(
+            lookup.findVirtual(JCTree.class, "getEndPosition", MethodType.methodType(int.class)),
+            1,
+            JCCompilationUnit.class);
+      } catch (ReflectiveOperationException e1) {
+        throw new LinkageError(e1.getMessage(), e1);
+      }
+    }
+    try {
+      // (tree, unit) -> tree.getEndPosition(unit.endPositions)
+      return MethodHandles.filterArguments(
+          lookup.findVirtual(
+              JCTree.class,
+              "getEndPosition",
+              MethodType.methodType(int.class, END_POS_TABLE_CLASS)),
+          1,
+          lookup
+              .findVarHandle(JCCompilationUnit.class, "endPositions", END_POS_TABLE_CLASS)
+              .toMethodHandle(VarHandle.AccessMode.GET));
+    } catch (ReflectiveOperationException e) {
+      throw new LinkageError(e.getMessage(), e);
+    }
   }
 }

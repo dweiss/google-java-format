@@ -51,7 +51,7 @@ import javax.tools.JavaFileObject;
 /** Wraps string literals that exceed the column limit. */
 public final class StringWrapper {
 
-  public static final String TEXT_BLOCK_DELIMITER = "\"\"\"";
+  private static final String TEXT_BLOCK_DELIMITER = "\"\"\"";
 
   /** Reflows long string literals in the given Java source code. */
   public static String wrap(String input, Formatter formatter) throws FormatterException {
@@ -155,8 +155,8 @@ public final class StringWrapper {
           return null;
         }
         Tree parent = getCurrentPath().getParentPath().getLeaf();
-        if (parent instanceof MemberSelectTree
-            && ((MemberSelectTree) parent).getExpression().equals(literalTree)) {
+        if (parent instanceof MemberSelectTree memberSelectTree
+            && memberSelectTree.getExpression().equals(literalTree)) {
           return null;
         }
         int endPosition = getEndPosition(literalTree, unit);
@@ -302,14 +302,14 @@ public final class StringWrapper {
     return result.build();
   }
 
-  static int hasEscapedWhitespaceAt(String input, int idx) {
+  private static int hasEscapedWhitespaceAt(String input, int idx) {
     if (input.startsWith("\\t", idx)) {
       return 2;
     }
     return -1;
   }
 
-  static int hasEscapedNewlineAt(String input, int idx) {
+  private static int hasEscapedNewlineAt(String input, int idx) {
     int offset = 0;
     if (input.startsWith("\\r", idx)) {
       offset += 2;
@@ -444,7 +444,7 @@ public final class StringWrapper {
         input.subSequence(getEndPosition(one, unit), getStartPosition(two)));
   }
 
-  public static final CharMatcher STRING_CONCAT_DELIMITER =
+  private static final CharMatcher STRING_CONCAT_DELIMITER =
       CharMatcher.whitespace().or(CharMatcher.anyOf("\"+"));
 
   /**
