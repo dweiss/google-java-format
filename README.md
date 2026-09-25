@@ -1,5 +1,7 @@
 # FORK. FORK. FORK.
 
+**This fork is no longer active since gjf does support markdown formatting now**
+
 This is a fork of the project with some additional patches applied:
 
 * [does not reflow markdown comments](https://github.com/google/google-java-format/pull/1231)
